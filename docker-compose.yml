@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # -----------------------------------------------------------
+  # 1. Centralized Message Broker & Cache
+  # -----------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: sasta_maal_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  # -----------------------------------------------------------
+  # 2. Pipeline Worker (Deduplication, Transformer & Dispatcher)
+  # -----------------------------------------------------------
+  pipeline-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sasta_maal_worker
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - whatsapp-service
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - WHATSAPP_BAILEYS_ENDPOINT=http://whatsapp-service:3001/send-deal
+    volumes:
+      - ./:/app
+    command: python queue/worker.py
+
+  # -----------------------------------------------------------
+  # 3. Engine A: Telegram Userbot Listener
+  # -----------------------------------------------------------
+  userbot-listener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sasta_maal_userbot
+    restart: unless-stopped
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./:/app
+      - userbot_sessions:/app/sessions
+    command: python ingestion/userbot_listener.py
+
+  # -----------------------------------------------------------
+  # 4. Engine B: Target Scrapers & Mobile Endpoints
+  # -----------------------------------------------------------
+  scraper-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sasta_maal_scraper
+    restart: unless-stopped
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./:/app
+    command: python ingestion/scraper_engine.py
+
+  # -----------------------------------------------------------
+  # 5. WhatsApp Baileys Microservice (Anti-Ban Queue)
+  # -----------------------------------------------------------
+  whatsapp-service:
+    build:
+      context: ./broadcaster/whatsapp
+      dockerfile: Dockerfile
+    container_name: sasta_maal_whatsapp
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - whatsapp_session:/app/session
+    env_file:
+      - .env
+
+volumes:
+  redis_data:
+  userbot_sessions:
+  whatsapp_session:
